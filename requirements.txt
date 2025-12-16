@@ -1,0 +1,7 @@
+aiogram==3.13.1
+pandas
+xlrd
+openpyxl
+beautifulsoup4
+apscheduler
+aiohttp
