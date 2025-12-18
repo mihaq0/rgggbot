@@ -16,12 +16,11 @@ from aiogram.enums import ParseMode
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # ТВОЙ ТОКЕН — УЖЕ ВСТАВЛЕН
-TOKEN = "7605214341:AAFHG0AyEGLnDcjPFqTOjzAWZZ3Z7s7EsqA"
-
+TOKEN = "
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
-URL = "https://sh40-cherepovec-r19.gosweb.gosuslugi.ru/roditelyam-i-uchenikam/izmeneniya-v-raspisanii/"
+URL = 
 
 # База в памяти (на Render файлы не сохраняются надолго, но для бота хватает)
 subs = {}      # {user_id: "10А"}
