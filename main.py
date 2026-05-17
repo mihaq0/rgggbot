@@ -15,12 +15,12 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-# ТВОЙ ТОКЕН — УЖЕ ВСТАВЛЕН
-TOKEN = "
-bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+# ТВОЙ ТОКЕН — БЕРЕТСЯ ИЗ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ
+TOKEN = os.getenv("BOT_TOKEN")
+bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML)) if TOKEN else None
 dp = Dispatcher()
 
-URL = 
+URL = "https://sh40-cherepovec-r19.gosweb.gosuslugi.ru/roditelyam-i-uchenikam/izmeneniya-v-raspisanii/"
 
 # База в памяти (на Render файлы не сохраняются надолго, но для бота хватает)
 subs = {}      # {user_id: "10А"}
@@ -62,19 +62,41 @@ def letters_kb(parallel):
 
 # Поиск ссылки на завтра
 async def get_tomorrow_url():
-    tomorrow = (datetime.date.today() + datetime.timedelta(days=1)).strftime("%d.%m")
+    tomorrow_dt = datetime.date.today() + datetime.timedelta(days=1)
+    tomorrow_dot = tomorrow_dt.strftime("%d.%m")
+    tomorrow_day = str(tomorrow_dt.day)
+
+    months = ["января", "февраля", "марта", "апреля", "мая", "июня",
+              "июля", "августа", "сентября", "октября", "ноября", "декабря"]
+    tomorrow_month = months[tomorrow_dt.month - 1]
+
     async with aiohttp.ClientSession() as session:
         async with session.get(URL) as resp:
             html = await resp.text()
+
     soup = BeautifulSoup(html, "html.parser")
+    links = []
     for a in soup.find_all("a", href=True):
-        text = a.text
-        href = a["href"]
-        if tomorrow in text and href.endswith((".xls", ".xlsx")):
-            if href.startswith("/"):
-                href = "https://sh40-cherepovec-r19.gosweb.gosuslugi.ru" + href
-            return href
-    return None
+        text = a.text.lower()
+        href = a["href"].lower()
+
+        # Проверяем наличие даты в разных форматах
+        has_date = (tomorrow_dot in text or
+                    (tomorrow_day in text and tomorrow_month[:3] in text) or
+                    tomorrow_dot in href or
+                    (tomorrow_day in href and tomorrow_month[:3] in href))
+
+        if has_date and href.endswith((".xls", ".xlsx")):
+            full_href = a["href"]
+            if full_href.startswith("/"):
+                full_href = "https://sh40-cherepovec-r19.gosweb.gosuslugi.ru" + full_href
+
+            # Приоритет ссылкам со словом "смена"
+            if "смена" in text or "smena" in href:
+                return full_href
+            links.append(full_href)
+
+    return links[0] if links else None
 
 # Парсинг расписания
 async def get_schedule(class_name):
@@ -89,35 +111,66 @@ async def get_schedule(class_name):
             data = await resp.read()
     
     try:
-        df = pd.read_excel(BytesIO(data))
+        df = pd.read_excel(BytesIO(data), header=None)
     except:
         return "Не удалось прочитать файл 😭"
     
-    df = df.applymap(lambda x: str(x).strip() if pd.notna(x) else "")
+    df = df.fillna("")
+    search_name = class_name.replace(" ", "").lower()
     
-    # Ищем колонку с классами
-    class_col = None
-    for col in df.columns:
-        if "класс" in str(col).lower():
-            class_col = col
-            break
-    if not class_col:
-        return "Не нашёл колонку с классами"
+    # Ищем колонку с классом
+    target_col = None
+    for j in range(df.shape[1]):
+        for i in range(min(10, df.shape[0])):
+            if search_name == str(df.iloc[i, j]).replace(" ", "").lower():
+                target_col = j
+                break
+        if target_col is not None: break
     
-    rows = df[df[class_col].str.contains(class_name, case=False, na=False)]
-    if rows.empty:
+    if target_col is None:
         return f"Для {class_name} изменений нет ✅"
     
+    # Ищем колонку с номерами уроков
+    num_col = None
+    for j in range(df.shape[1]):
+        for i in range(min(10, df.shape[0])):
+            if "№" in str(df.iloc[i, j]):
+                num_col = j
+                break
+        if num_col is not None: break
+    if num_col is None: num_col = 1
+
     text = f"<b>Изменения для {class_name} на завтра:</b>\n\n"
-    changes = False
-    for _, row in rows.iterrows():
-        for col in df.columns:
-            if str(col).isdigit():
-                val = row[col]
-                if val and val not in ["", "-", "н", "нет", "—"]:
-                    text += f"<b>{col}.</b> {val}\n"
-                    changes = True
-    return text if changes else f"Для {class_name} изменений нет ✅"
+    changes = []
+
+    def clean(val):
+        s = str(val).strip()
+        if s.endswith(".0"): s = s[:-2]
+        return s
+
+    for i in range(df.shape[0]):
+        lesson_num = clean(df.iloc[i, num_col])
+        if lesson_num.isdigit():
+            subject = clean(df.iloc[i, target_col])
+            info = ""
+            if target_col + 1 < df.shape[1]:
+                info = clean(df.iloc[i, target_col+1])
+
+            # Проверяем следующую строку (там может быть кабинет или продолжение названия)
+            if i + 1 < df.shape[0] and not clean(df.iloc[i+1, num_col]).isdigit():
+                sub2 = clean(df.iloc[i+1, target_col])
+                if sub2: subject += f" {sub2}"
+                if target_col + 1 < df.shape[1]:
+                    inf2 = clean(df.iloc[i+1, target_col+1])
+                    if inf2: info += f" {inf2}"
+
+            if subject or info:
+                changes.append(f"<b>{lesson_num}.</b> {subject} {info}".strip())
+
+    if not changes:
+        return f"Для {class_name} изменений нет ✅"
+
+    return text + "\n".join(changes)
 
 # Авто-рассылка
 async def auto_send():
